@@ -13,7 +13,7 @@ app = Flask(__name__)
 # Alpaca Live API Keys
 ALPACA_API_KEY     = os.environ.get("ALPACA_API_KEY")
 ALPACA_SECRET_KEY  = os.environ.get("ALPACA_SECRET_KEY")
-ALPACA_BASE_URL     = "https://alpaca.markets"  # Swap to live URL when verified
+ALPACA_BASE_URL     = "https://paper-api.alpaca.markets"  # Paper trading API
 
 # Free Gmail Notification Credentials
 GMAIL_ADDRESS      = os.environ.get("GMAIL_ADDRESS")
@@ -91,7 +91,6 @@ def check_account_safety():
 @app.route('/webhook', methods=['POST'])
 def handle_tradingview_alert():
     payload = request.json
-    print(payload)
     if not payload:
         return jsonify({"status": "rejected", "reason": "Payload empty"}), 400
         
@@ -148,7 +147,7 @@ def handle_tradingview_alert():
         alert_body = f"Trade Number {GLOBAL_STATE['trades_executed_today']} Active!\n" \
                      f"Action: {order_side.upper()} {shares} shares of {ticker}\n" \
                      f"Entry: ${entry_price:.2f}\n" \
-                     f"Target Profit: ${takeProfit_price:.2f}\n" \
+                     f"Target Profit: ${take_profit_price:.2f}\n" \
                      f"Hard Stop Loss: ${stop_loss_price:.2f}"
                      
         send_notification(f"ORDER FILLED: {ticker} {order_side.upper()}", alert_body)
