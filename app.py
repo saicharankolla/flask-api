@@ -91,6 +91,7 @@ def check_account_safety():
 @app.route('/webhook', methods=['POST'])
 def handle_tradingview_alert():
     payload = request.json
+    print(payload)
     if not payload:
         return jsonify({"status": "rejected", "reason": "Payload empty"}), 400
         
