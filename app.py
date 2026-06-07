@@ -65,6 +65,7 @@ def check_account_safety():
 
     try:
         account = api.get_account()
+        print(account)
         equity = float(account.equity)
         
         if GLOBAL_STATE["initial_balance_today"] is None:
