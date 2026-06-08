@@ -106,6 +106,7 @@ async def handle_webhook(request: Request):
             
         try:
             payload = await request.json()
+            logger.info(f"Webhook request received: {payload}")
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid JSON Structure")
             
