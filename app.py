@@ -24,6 +24,10 @@ logger = logging.getLogger("LeveragedEngine")
 app = FastAPI(title="9:30 AM Breakout Execution Engine v4.5")
 trading_lock = asyncio.Lock()
 
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+    
 # --- 2. INITIALIZE CLIENTS & CREDENTIALS ---
 ALPACA_API_KEY     = os.environ.get("ALPACA_API_KEY")
 ALPACA_SECRET_KEY  = os.environ.get("ALPACA_SECRET_KEY")
