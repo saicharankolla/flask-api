@@ -92,13 +92,13 @@ def check_circuit_breaker() -> bool:
 async def handle_webhook(request: Request):
     async with trading_lock:
         
-        # NOTE: For weekend testing, you can temporarily comment out these two if-statements
-        # if not enforce_market_hours():
-        #     logger.warning("Signal dropped: Webhook packet received outside market hours.")
-        #     raise HTTPException(status_code=403, detail="Market is closed.")
+        NOTE: For weekend testing, you can temporarily comment out these two if-statements
+        if not enforce_market_hours():
+            logger.warning("Signal dropped: Webhook packet received outside market hours.")
+            raise HTTPException(status_code=403, detail="Market is closed.")
             
-        # if not check_circuit_breaker():
-        #     raise HTTPException(status_code=403, detail="Circuit Breaker active. Trading halted.")
+        if not check_circuit_breaker():
+            raise HTTPException(status_code=403, detail="Circuit Breaker active. Trading halted.")
             
         try:
             payload = await request.json()
