@@ -45,7 +45,7 @@ def send_sms_alert(subject: str, message: str):
         msg['From'] = GMAIL_USER
         msg['To'] = SMS_GATEWAY
         
-        with smtplib.SMTP_SSL('://gmail.com', 465) as server:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
             server.send_message(msg)
         logger.info(f"SMS Notification Dispatched: {subject}")
