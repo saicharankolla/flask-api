@@ -92,7 +92,7 @@ def check_circuit_breaker() -> bool:
 async def handle_webhook(request: Request):
     async with trading_lock:
         
-        NOTE: For weekend testing, you can temporarily comment out these two if-statements
+        # NOTE: For weekend testing, you can temporarily comment out these two if-statements
         if not enforce_market_hours():
             logger.warning("Signal dropped: Webhook packet received outside market hours.")
             raise HTTPException(status_code=403, detail="Market is closed.")
