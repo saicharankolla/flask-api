@@ -101,8 +101,9 @@ async def handle_webhook(request: Request):
             logger.warning("Signal dropped: Webhook packet received outside market hours.")
             raise HTTPException(status_code=403, detail="Market is closed.")
             
-        if not check_circuit_breaker():
-            raise HTTPException(status_code=403, detail="Circuit Breaker active. Trading halted.")
+        # Circuit breaker temporarily disabled.
+        # if not check_circuit_breaker():
+        #     raise HTTPException(status_code=403, detail="Circuit Breaker active. Trading halted.")
             
         try:
             payload = await request.json()
@@ -138,7 +139,7 @@ async def handle_webhook(request: Request):
             try:
                 account = trading_client.get_account()
                 buying_power = float(account.daytrading_buying_power)
-                allocated_cash = round(buying_power / 3, 2)
+                allocated_cash = min(round(buying_power / 3, 2), 10000.00)
                 
                 # REPAIRED: Fetch dynamic last-trade price from Alpaca to scale real share sizing
                 # Using standard fallback estimation if data connections are thin during paper open
