@@ -1,5 +1,5 @@
 //@version=6
-indicator("930 AM Leveraged Breakout Engine v8 - PRODUCTION", overlay=true)
+indicator("930 AM Leveraged Breakout Engine v5 - PRODUCTION", overlay=true)
 
 // --- Inputs ---
 atrPeriod        = input.int(14, title="ATR Period for Volatility Tracking")
