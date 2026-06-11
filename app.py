@@ -115,7 +115,7 @@ async def handle_webhook(request: Request):
         side = payload.get("side")
         atr_value = float(payload.get("atr", 0))
         
-        if symbol not in ["SMCI", "MSTR", "TSLA", "COIN", "HOOD"]:
+        if symbol not in ["SMCI", "MSTR", "TSLA", "COIN", "HOOD", "AMC"]:
             return {"status": "ignored", "reason": "Out of strategy scope"}
             
         positions = trading_client.get_all_positions()
