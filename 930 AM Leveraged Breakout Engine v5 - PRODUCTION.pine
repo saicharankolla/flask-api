@@ -64,8 +64,8 @@ bgcolor(inTradeWindow and volConfirmed ? color.new(color.teal, 90) : na, title="
 // 3. Orange X when price crosses the level but volume is too low — shows what the filter blocked
 priceBreaksHigh = ta.crossover(close, openHigh) and inTradeWindow and position_state == 0 and not na(openHigh) and not volConfirmed
 priceBreaksLow  = ta.crossunder(close, openLow)  and inTradeWindow and position_state == 0 and not na(openLow)  and not volConfirmed
-plotshape(priceBreaksHigh, "Low Vol Reject ↑", shape.xcross, location.abovebar, color.new(color.orange, 0), size=size.small, title="Volume Filtered Long")
-plotshape(priceBreaksLow,  "Low Vol Reject ↓", shape.xcross, location.belowbar, color.new(color.orange, 0), size=size.small, title="Volume Filtered Short")
+plotshape(priceBreaksHigh, title="Volume Filtered Long",  style=shape.xcross, location=location.abovebar, color=color.new(color.orange, 0), size=size.small)
+plotshape(priceBreaksLow,  title="Volume Filtered Short", style=shape.xcross, location=location.belowbar, color=color.new(color.orange, 0), size=size.small)
 
 // 4. Label at range close — shows avg volume baseline and confirmation threshold for the session
 if (not is_session_start and is_session_start[1] and not na(avgRangeVol))
@@ -84,8 +84,8 @@ longCondition  = ta.crossover(close, openHigh) and inTradeWindow and position_st
 shortCondition = ta.crossunder(close, openLow)  and inTradeWindow and position_state == 0 and not na(openLow)  and volConfirmed
 
 // 5. Green/red triangles on confirmed signal bars — distinct from the filtered orange X marks
-plotshape(longCondition,  "Confirmed Long",  shape.triangleup,   location.belowbar, color.new(color.green, 0), size=size.normal, title="Confirmed Long Signal")
-plotshape(shortCondition, "Confirmed Short", shape.triangledown, location.abovebar, color.new(color.red,   0), size=size.normal, title="Confirmed Short Signal")
+plotshape(longCondition,  title="Confirmed Long Signal",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.normal)
+plotshape(shortCondition, title="Confirmed Short Signal", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,   0), size=size.normal)
 
 // --- Trade Signals & JSON Webhook Structuring ---
 alert_ts = str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC")
