@@ -31,7 +31,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("LeveragedEngine")
 
-SYMBOLS = {"SMCI", "MSTR", "TSLA"}
+SYMBOLS = {"SMCI", "MSTR", "TSLA", "COIN", "HOOD"}
 symbol_locks = {symbol: asyncio.Lock() for symbol in SYMBOLS}
 EXECUTION_LOCK = asyncio.Lock()
 
