@@ -1,119 +1,84 @@
 //@version=6
-indicator("930 AM Leveraged Breakout Engine v5 - PRODUCTION", overlay=true)
+indicator("930 AM Leveraged Breakout Engine v8 - PRODUCTION", overlay=true)
 
 // --- Inputs ---
-atrPeriod     = input.int(14,    title="ATR Period for Volatility Tracking")
-atrMultiplier = input.float(1.5, title="ATR Trailing Multiplier")
-rangeEnd      = input.string("0945", title="Opening Range End (HHMM)", options=["0935", "0945", "1000", "1030"])
-volMultiplier = input.float(1.5, title="Volume Confirmation Multiplier", minval=1.0)
+atrPeriod        = input.int(14, title="ATR Period for Volatility Tracking")
+bufferMultiplier = input.float(0.1, title="False Breakout ATR Buffer (e.g. 0.1 = 10% of ATR)", minval=0.0)
+
+trendEmaFast     = input.int(5, title="Trend Filter Fast EMA Period")
+trendEmaSlow     = input.int(20, title="Trend Filter Slow EMA Period")
+volMovingAvg     = input.int(20, title="Volume Moving Average Period")
+minVolRatio      = input.float(1.2, title="Minimum Volume Ratio for Breakout")
+cooldownBars     = input.int(3, title="Bars Cooldown Between Trades")
 
 // --- Structural Time Filters (Exchange Timezone) ---
-is_session_start = not na(time(timeframe.period, "0930-" + rangeEnd + ":23456", "America/New_York"))
-inTradeWindow    = not na(time(timeframe.period, rangeEnd + "-1550:23456", "America/New_York"))
+is_session_start = not na(time(timeframe.period, "0930-0935:23456", "America/New_York"))
+inTradeWindow    = not na(time(timeframe.period, "0935-1550:23456", "America/New_York"))
 isMarketClose    = not na(time(timeframe.period, "1555-1600:23456", "America/New_York"))
 isNewDay         = ta.change(time("D", "America/New_York")) != 0
 
-// --- Persistent Variables ---
-var float openHigh      = na
-var float openLow       = na
-var bool  rangeCaptured = false
-var float rangeVolSum   = 0.0
-var int   rangeVolBars  = 0
-var int   position_state = 0  // 0 = Flat, 1 = Long, -1 = Short
-var float stopLossPrice  = na
-var label rangeVolLabel  = na
+// --- Persistent Range & State Variables ---
+var float openHigh     = na
+var float openLow      = na
+var int barsSinceEntry = cooldownBars + 1
 
-// Reset all registers at the first candle of each trading day
-if (isNewDay)
-    openHigh      := na
-    openLow       := na
-    rangeCaptured := false
-    rangeVolSum   := 0.0
-    rangeVolBars  := 0
+if isNewDay
+    openHigh := na
+    openLow  := na
+    barsSinceEntry := cooldownBars + 1
 
-// Track range boundaries and accumulate volume during the opening range window
-if (is_session_start)
-    if (not rangeCaptured or na(openHigh))
-        openHigh      := high
-        openLow       := low
-        rangeCaptured := true
+if is_session_start
+    if na(openHigh)
+        openHigh := high
+        openLow  := low
     else
-        openHigh := math.max(high, openHigh)
-        openLow  := math.min(low, openLow)
-    rangeVolSum  := rangeVolSum + volume
-    rangeVolBars := rangeVolBars + 1
+        openHigh := math.max(openHigh, high)
+        openLow  := math.min(openLow, low)
 
-// --- Volatility & Volume Calculations ---
-atr          = ta.atr(atrPeriod)
-avgRangeVol  = rangeVolBars > 0 ? rangeVolSum / rangeVolBars : na
-volThreshold = avgRangeVol * volMultiplier
-volConfirmed = not na(avgRangeVol) and volume >= volThreshold
+// --- Volatility, Volume, and Buffer Calculations ---
+atr            = ta.atr(atrPeriod)
+breakoutBuffer = atr * bufferMultiplier
 
-// --- Range Lines ---
-plot(inTradeWindow ? openHigh : na, color=color.green, style=plot.style_linebr, linewidth=2, title="Long Breakout Line")
-plot(inTradeWindow ? openLow  : na, color=color.red,   style=plot.style_linebr, linewidth=2, title="Short Breakout Line")
+volMa          = ta.sma(volume, volMovingAvg)
+volRatio       = not na(volMa) and volMa > 0 ? volume / volMa : 0.0
+volSufficient  = volRatio >= minVolRatio
 
-// --- Volume Visualization ---
+// --- Trend Filter Calculations ---
+emaFast        = ta.ema(close, trendEmaFast)
+emaSlow        = ta.ema(close, trendEmaSlow)
+trendBullish   = emaFast > emaSlow
+trendBearish   = emaFast < emaSlow
 
-// 1. Blue tint during opening range build — shows which bars define the range and volume baseline
-bgcolor(is_session_start ? color.new(color.blue, 88) : na, title="Opening Range Window")
+// --- Execution Logic ---
+cooldownClear  = barsSinceEntry > cooldownBars
 
-// 2. Teal tint on trade-window bars where volume is above threshold — shows live confirmation status
-bgcolor(inTradeWindow and volConfirmed ? color.new(color.teal, 90) : na, title="Volume Confirmed Bar")
+longCondition  = ta.crossover(close, openHigh + breakoutBuffer) and inTradeWindow and cooldownClear and not na(openHigh) and volSufficient and trendBullish
+shortCondition = ta.crossunder(close, openLow - breakoutBuffer) and inTradeWindow and cooldownClear and not na(openLow) and volSufficient and trendBearish
 
-// 3. Orange X when price crosses the level but volume is too low — shows what the filter blocked
-priceBreaksHigh = ta.crossover(close, openHigh) and inTradeWindow and position_state == 0 and not na(openHigh) and not volConfirmed
-priceBreaksLow  = ta.crossunder(close, openLow)  and inTradeWindow and position_state == 0 and not na(openLow)  and not volConfirmed
-plotshape(priceBreaksHigh, title="Volume Filtered Long",  style=shape.xcross, location=location.abovebar, color=color.new(color.orange, 0), size=size.small)
-plotshape(priceBreaksLow,  title="Volume Filtered Short", style=shape.xcross, location=location.belowbar, color=color.new(color.orange, 0), size=size.small)
+// --- Alert & Webhook Generation (Entry Only — Alpaca Owns All Exits) ---
+alert_ts = str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "UTC")
 
-// 4. Label at range close — shows avg volume baseline and confirmation threshold for the session
-if (not is_session_start and is_session_start[1] and not na(avgRangeVol))
-    label.delete(rangeVolLabel)
-    rangeVolLabel := label.new(
-        bar_index, openHigh,
-        "Avg Vol: "    + str.tostring(math.round(avgRangeVol),  "#,###") +
-        "\nThreshold: " + str.tostring(math.round(volThreshold), "#,###"),
-        color     = color.new(color.blue, 65),
-        textcolor = color.white,
-        style     = label.style_label_right,
-        size      = size.small)
+if longCondition
+    barsSinceEntry := 0
+    alert('{"symbol": "' + syminfo.ticker + '", "side": "buy", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
 
-// --- Breakout Conditions ---
-longCondition  = ta.crossover(close, openHigh) and inTradeWindow and position_state == 0 and not na(openHigh) and volConfirmed
-shortCondition = ta.crossunder(close, openLow)  and inTradeWindow and position_state == 0 and not na(openLow)  and volConfirmed
-
-// 5. Green/red triangles on confirmed signal bars — distinct from the filtered orange X marks
-plotshape(longCondition,  title="Confirmed Long Signal",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.normal)
-plotshape(shortCondition, title="Confirmed Short Signal", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,   0), size=size.normal)
-
-// --- Trade Signals & JSON Webhook Structuring ---
-alert_ts = str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC")
-
-if (longCondition)
-    position_state := 1
-    stopLossPrice  := close - (atr * atrMultiplier)
-    alert('{"symbol": "' + syminfo.ticker + '", "side": "buy", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr * atrMultiplier) + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
-
-if (shortCondition)
-    position_state := -1
-    stopLossPrice  := close + (atr * atrMultiplier)
-    alert('{"symbol": "' + syminfo.ticker + '", "side": "sell", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr * atrMultiplier) + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
-
-// --- Active Position Trailing Logic ---
-if (position_state == 1)
-    stopLossPrice := math.max(stopLossPrice, high - (atr * atrMultiplier))
-    if (close <= stopLossPrice)
-        position_state := 0
-        alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "Trailing Stop Hit", "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
-
-if (position_state == -1)
-    stopLossPrice := math.min(stopLossPrice, low + (atr * atrMultiplier))
-    if (close >= stopLossPrice)
-        position_state := 0
-        alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "Trailing Stop Hit", "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
+if shortCondition
+    barsSinceEntry := 0
+    alert('{"symbol": "' + syminfo.ticker + '", "side": "sell", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
 
 // --- End of Day Safety Liquidation ---
-if (isMarketClose and position_state != 0)
-    position_state := 0
+if isMarketClose
     alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "EOD Liquidation", "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
+
+// --- Visual Chart Elements ---
+plot(inTradeWindow ? openHigh : na, color=color.green, style=plot.style_linebr, title="Morning High")
+plot(inTradeWindow ? openLow : na, color=color.red, style=plot.style_linebr, title="Morning Low")
+
+plot(inTradeWindow ? openHigh + breakoutBuffer : na, color=color.new(color.green, 70), style=plot.style_linebr, title="High Trigger Buffer")
+plot(inTradeWindow ? openLow - breakoutBuffer : na, color=color.new(color.red, 70), style=plot.style_linebr, title="Low Trigger Buffer")
+
+plot(emaFast, color=color.new(color.aqua, 60), title="Fast EMA")
+plot(emaSlow, color=color.new(color.purple, 60), title="Slow EMA")
+
+plotshape(longCondition, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, title="Long Entry")
+plotshape(shortCondition, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, title="Short Entry")
