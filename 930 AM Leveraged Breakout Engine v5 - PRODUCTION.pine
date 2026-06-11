@@ -2,76 +2,118 @@
 indicator("930 AM Leveraged Breakout Engine v5 - PRODUCTION", overlay=true)
 
 // --- Inputs ---
-atrPeriod     = input.int(14, title="ATR Period for Volatility Tracking")
+atrPeriod     = input.int(14,    title="ATR Period for Volatility Tracking")
 atrMultiplier = input.float(1.5, title="ATR Trailing Multiplier")
+rangeEnd      = input.string("0945", title="Opening Range End (HHMM)", options=["0935", "0945", "1000", "1030"])
+volMultiplier = input.float(1.5, title="Volume Confirmation Multiplier", minval=1.0)
 
 // --- Structural Time Filters (Exchange Timezone) ---
-is_session_start = not na(time(timeframe.period, "0930-0935:23456", "America/New_York"))
-inTradeWindow    = not na(time(timeframe.period, "0935-1550:23456", "America/New_York"))
+is_session_start = not na(time(timeframe.period, "0930-" + rangeEnd + ":23456", "America/New_York"))
+inTradeWindow    = not na(time(timeframe.period, rangeEnd + "-1550:23456", "America/New_York"))
 isMarketClose    = not na(time(timeframe.period, "1555-1600:23456", "America/New_York"))
 isNewDay         = ta.change(time("D", "America/New_York")) != 0
 
-// --- Persistent Range Variables ---
-var float openHigh = na
-var float openLow  = na
-var bool rangeCaptured = false
+// --- Persistent Variables ---
+var float openHigh      = na
+var float openLow       = na
+var bool  rangeCaptured = false
+var float rangeVolSum   = 0.0
+var int   rangeVolBars  = 0
+var int   position_state = 0  // 0 = Flat, 1 = Long, -1 = Short
+var float stopLossPrice  = na
+var label rangeVolLabel  = na
 
-// Reset memory registers cleanly at the exact first candle of the trading day
+// Reset all registers at the first candle of each trading day
 if (isNewDay)
-    openHigh := na
-    openLow  := na
+    openHigh      := na
+    openLow       := na
     rangeCaptured := false
+    rangeVolSum   := 0.0
+    rangeVolBars  := 0
 
-// Continuously track and widen the range boundaries during the 9:30-9:35 AM window
+// Track range boundaries and accumulate volume during the opening range window
 if (is_session_start)
     if (not rangeCaptured or na(openHigh))
-        openHigh := high
-        openLow  := low
+        openHigh      := high
+        openLow       := low
         rangeCaptured := true
     else
         openHigh := math.max(high, openHigh)
         openLow  := math.min(low, openLow)
+    rangeVolSum  := rangeVolSum + volume
+    rangeVolBars := rangeVolBars + 1
 
-// --- Volatility Calculations ---
-atr = ta.atr(atrPeriod)
+// --- Volatility & Volume Calculations ---
+atr          = ta.atr(atrPeriod)
+avgRangeVol  = rangeVolBars > 0 ? rangeVolSum / rangeVolBars : na
+volThreshold = avgRangeVol * volMultiplier
+volConfirmed = not na(avgRangeVol) and volume >= volThreshold
 
-// --- Visual Layout Elements ---
+// --- Range Lines ---
 plot(inTradeWindow ? openHigh : na, color=color.green, style=plot.style_linebr, linewidth=2, title="Long Breakout Line")
-plot(inTradeWindow ? openLow : na, color=color.red, style=plot.style_linebr, linewidth=2, title="Short Breakout Line")
+plot(inTradeWindow ? openLow  : na, color=color.red,   style=plot.style_linebr, linewidth=2, title="Short Breakout Line")
 
-// --- Position State Tracking ---
-var int position_state = 0 // 0 = Flat, 1 = Long, -1 = Short
-var float stopLossPrice = na
+// --- Volume Visualization ---
 
-// Fixed Conditions: Must evaluate breakout against a confirmed closed candle inside the allowed window
-longCondition  = ta.crossover(close, openHigh) and inTradeWindow and position_state == 0 and not na(openHigh)
-shortCondition = ta.crossunder(close, openLow) and inTradeWindow and position_state == 0 and not na(openLow)
+// 1. Blue tint during opening range build — shows which bars define the range and volume baseline
+bgcolor(is_session_start ? color.new(color.blue, 88) : na, title="Opening Range Window")
+
+// 2. Teal tint on trade-window bars where volume is above threshold — shows live confirmation status
+bgcolor(inTradeWindow and volConfirmed ? color.new(color.teal, 90) : na, title="Volume Confirmed Bar")
+
+// 3. Orange X when price crosses the level but volume is too low — shows what the filter blocked
+priceBreaksHigh = ta.crossover(close, openHigh) and inTradeWindow and position_state == 0 and not na(openHigh) and not volConfirmed
+priceBreaksLow  = ta.crossunder(close, openLow)  and inTradeWindow and position_state == 0 and not na(openLow)  and not volConfirmed
+plotshape(priceBreaksHigh, "Low Vol Reject ↑", shape.xcross, location.abovebar, color.new(color.orange, 0), size=size.small, title="Volume Filtered Long")
+plotshape(priceBreaksLow,  "Low Vol Reject ↓", shape.xcross, location.belowbar, color.new(color.orange, 0), size=size.small, title="Volume Filtered Short")
+
+// 4. Label at range close — shows avg volume baseline and confirmation threshold for the session
+if (not is_session_start and is_session_start[1] and not na(avgRangeVol))
+    label.delete(rangeVolLabel)
+    rangeVolLabel := label.new(
+        bar_index, openHigh,
+        "Avg Vol: "    + str.tostring(math.round(avgRangeVol),  "#,###") +
+        "\nThreshold: " + str.tostring(math.round(volThreshold), "#,###"),
+        color     = color.new(color.blue, 65),
+        textcolor = color.white,
+        style     = label.style_label_right,
+        size      = size.small)
+
+// --- Breakout Conditions ---
+longCondition  = ta.crossover(close, openHigh) and inTradeWindow and position_state == 0 and not na(openHigh) and volConfirmed
+shortCondition = ta.crossunder(close, openLow)  and inTradeWindow and position_state == 0 and not na(openLow)  and volConfirmed
+
+// 5. Green/red triangles on confirmed signal bars — distinct from the filtered orange X marks
+plotshape(longCondition,  "Confirmed Long",  shape.triangleup,   location.belowbar, color.new(color.green, 0), size=size.normal, title="Confirmed Long Signal")
+plotshape(shortCondition, "Confirmed Short", shape.triangledown, location.abovebar, color.new(color.red,   0), size=size.normal, title="Confirmed Short Signal")
 
 // --- Trade Signals & JSON Webhook Structuring ---
+alert_ts = str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC")
+
 if (longCondition)
     position_state := 1
-    stopLossPrice := close - (atr * atrMultiplier)
-    alert('{"symbol": "' + syminfo.ticker + '", "side": "buy", "atr": ' + str.tostring(atr * atrMultiplier) + '}', alert.freq_once_per_bar)
+    stopLossPrice  := close - (atr * atrMultiplier)
+    alert('{"symbol": "' + syminfo.ticker + '", "side": "buy", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr * atrMultiplier) + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
 
 if (shortCondition)
     position_state := -1
-    stopLossPrice := close + (atr * atrMultiplier)
-    alert('{"symbol": "' + syminfo.ticker + '", "side": "sell", "atr": ' + str.tostring(atr * atrMultiplier) + '}', alert.freq_once_per_bar)
+    stopLossPrice  := close + (atr * atrMultiplier)
+    alert('{"symbol": "' + syminfo.ticker + '", "side": "sell", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr * atrMultiplier) + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
 
 // --- Active Position Trailing Logic ---
 if (position_state == 1)
     stopLossPrice := math.max(stopLossPrice, high - (atr * atrMultiplier))
     if (close <= stopLossPrice)
         position_state := 0
-        alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "Trailing Stop Hit"}', alert.freq_once_per_bar)
+        alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "Trailing Stop Hit", "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
 
 if (position_state == -1)
     stopLossPrice := math.min(stopLossPrice, low + (atr * atrMultiplier))
     if (close >= stopLossPrice)
         position_state := 0
-        alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "Trailing Stop Hit"}', alert.freq_once_per_bar)
+        alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "Trailing Stop Hit", "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
 
 // --- End of Day Safety Liquidation ---
 if (isMarketClose and position_state != 0)
     position_state := 0
-    alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "EOD Liquidation"}', alert.freq_once_per_bar)
+    alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "EOD Liquidation", "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
