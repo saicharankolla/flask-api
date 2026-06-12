@@ -121,8 +121,8 @@ if isMarketClose and not eodAlertSent and barstate.isconfirmed
     alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "EOD Liquidation", "alert_time": "' + alert_ts + '", "secret": "' + webhookSecret + '"}', alert.freq_once_per_bar)
 
 // --- Visual Chart Elements ---
-plot(inTradeWindow or isMiddayWindow ? openHigh : na, color=color.green, style=plot.style_linebr, title="Morning High")
-plot(inTradeWindow or isMiddayWindow ? openLow  : na, color=color.red,   style=plot.style_linebr, title="Morning Low")
+plot(inTradeWindow or isMiddayWindow or isAfternoonWindow ? openHigh : na, color=color.green, style=plot.style_linebr, title="Morning High")
+plot(inTradeWindow or isMiddayWindow or isAfternoonWindow ? openLow  : na, color=color.red,   style=plot.style_linebr, title="Morning Low")
 
 plot(inTradeWindow ? openHigh + breakoutBuffer : na, color=color.new(color.green, 70), style=plot.style_linebr, title="High Trigger Buffer")
 plot(inTradeWindow ? openLow  - breakoutBuffer : na, color=color.new(color.red,   70), style=plot.style_linebr, title="Low Trigger Buffer")
