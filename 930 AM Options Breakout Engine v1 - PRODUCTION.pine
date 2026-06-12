@@ -1,0 +1,178 @@
+//@version=6
+indicator("930 AM Options Breakout Engine v1 - PRODUCTION", overlay=true)
+
+// ──────────────────────────────────────────────
+// INPUTS
+// ──────────────────────────────────────────────
+atrPeriod        = input.int(14,    title="ATR Period")
+bufferMultiplier = input.float(0.1, title="False Breakout ATR Buffer (0.1 = 10% of ATR)", minval=0.0)
+trendEmaFast     = input.int(5,     title="Trend Fast EMA")
+trendEmaSlow     = input.int(20,    title="Trend Slow EMA")
+volMovingAvg     = input.int(20,    title="Volume MA Period")
+minVolRatio      = input.float(0.65,title="Minimum Volume Ratio")
+cooldownBars     = input.int(3,     title="Cooldown Bars Between Signals")
+
+// Options inputs
+strikeIncrement  = input.float(1.0, title="Strike Increment ($1 for COIN, $2.5 for high-price stocks)")
+otmOffset        = input.int(0,     title="OTM Offset (0=ATM, 1=1 strike OTM, 2=2 strikes OTM)", minval=0, maxval=5)
+dteMode          = input.string("0DTE", title="Expiry Target", options=["0DTE", "1DTE", "2DTE", "Weekly"])
+maxPremiumBudget = input.float(200, title="Max Premium Budget Per Contract ($)")
+contracts        = input.int(1,     title="Number of Contracts", minval=1, maxval=10)
+
+// ──────────────────────────────────────────────
+// TIME WINDOWS (ET)
+// ──────────────────────────────────────────────
+is_session_start  = not na(time(timeframe.period, "0930-0935:23456", "America/New_York"))
+inTradeWindow     = not na(time(timeframe.period, "0935-1100:23456", "America/New_York"))
+isMiddayWindow    = not na(time(timeframe.period, "1100-1230:23456", "America/New_York"))
+isAfternoonWindow = not na(time(timeframe.period, "1230-1550:23456", "America/New_York"))
+isMarketClose     = not na(time(timeframe.period, "1555-1600:23456", "America/New_York"))
+isNewDay          = ta.change(time("D", "America/New_York")) != 0
+
+// ──────────────────────────────────────────────
+// RANGE STATE
+// ──────────────────────────────────────────────
+var float openHigh     = na
+var float openLow      = na
+var float middayHigh   = na
+var float middayLow    = na
+var int barsSinceEntry = cooldownBars + 1
+
+if isNewDay
+    openHigh       := na
+    openLow        := na
+    middayHigh     := na
+    middayLow      := na
+    barsSinceEntry := cooldownBars + 1
+
+if is_session_start
+    openHigh := na(openHigh) ? high : math.max(openHigh, high)
+    openLow  := na(openLow)  ? low  : math.min(openLow,  low)
+
+if isMiddayWindow
+    middayHigh := na(middayHigh) ? high : math.max(middayHigh, high)
+    middayLow  := na(middayLow)  ? low  : math.min(middayLow,  low)
+
+// ──────────────────────────────────────────────
+// INDICATORS
+// ──────────────────────────────────────────────
+atr            = ta.atr(atrPeriod)
+breakoutBuffer = atr * bufferMultiplier
+volMa          = ta.sma(volume, volMovingAvg)
+volRatio       = not na(volMa) and volMa > 0 ? volume / volMa : 0.0
+volSufficient  = volRatio >= minVolRatio
+emaFast        = ta.ema(close, trendEmaFast)
+emaSlow        = ta.ema(close, trendEmaSlow)
+trendBullish   = emaFast > emaSlow
+trendBearish   = emaFast < emaSlow
+
+// ──────────────────────────────────────────────
+// BREAKOUT CONDITIONS
+// ──────────────────────────────────────────────
+barsSinceEntry := barsSinceEntry + 1
+cooldownClear  = barsSinceEntry > cooldownBars
+
+longCondition   = ta.crossover(close,  openHigh + breakoutBuffer)  and inTradeWindow     and cooldownClear and not na(openHigh)   and volSufficient and trendBullish
+shortCondition  = ta.crossunder(close, openLow  - breakoutBuffer)  and inTradeWindow     and cooldownClear and not na(openLow)    and volSufficient and trendBearish
+afternoonLong   = ta.crossover(close,  middayHigh + breakoutBuffer) and isAfternoonWindow and cooldownClear and not na(middayHigh) and volSufficient and trendBullish
+afternoonShort  = ta.crossunder(close, middayLow  - breakoutBuffer) and isAfternoonWindow and cooldownClear and not na(middayLow)  and volSufficient and trendBearish
+
+isBull = longCondition  or afternoonLong
+isBear = shortCondition or afternoonShort
+
+// ──────────────────────────────────────────────
+// OPTIONS STRIKE CALCULATION
+// ──────────────────────────────────────────────
+// Round to nearest strike, then shift OTM by otmOffset increments
+atmStrike   = math.round(close / strikeIncrement) * strikeIncrement
+callStrike  = atmStrike + (otmOffset * strikeIncrement)   // OTM call = higher strike
+putStrike   = atmStrike - (otmOffset * strikeIncrement)   // OTM put  = lower strike
+
+// ATR-based premium proxy: ~30% of ATR for ATM 0DTE (rough estimate, not real IV)
+// Actual premium must be verified in your broker before entry
+atrPremiumProxy = atr * 0.30
+premiumFit      = atrPremiumProxy <= (maxPremiumBudget / 100)  // per-share check
+
+// Minimum price move needed to break even on the option (rough)
+// Breakeven move = premium paid; we proxy premium as 30% of ATR
+beMoveEstimate  = atrPremiumProxy
+
+// ──────────────────────────────────────────────
+// ALERT PAYLOADS
+// ──────────────────────────────────────────────
+alert_ts = str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "UTC")
+
+if isBull
+    barsSinceEntry := 0
+    alert(
+      '{"symbol":"'      + syminfo.ticker +
+      '","action":"BUY_CALL"' +
+      ',"option_type":"call"' +
+      ',"strike":'       + str.tostring(callStrike, "#.##") +
+      ',"dte":"'         + dteMode + '"' +
+      ',"contracts":'    + str.tostring(contracts) +
+      ',"atm_strike":'   + str.tostring(atmStrike, "#.##") +
+      ',"atr":'          + str.tostring(atr, "#.##") +
+      ',"vol_ratio":'    + str.tostring(volRatio, "#.##") +
+      ',"price":'        + str.tostring(close, "#.##") +
+      ',"be_move":'      + str.tostring(beMoveEstimate, "#.##") +
+      ',"session":"'     + (inTradeWindow ? "morning" : "afternoon") + '"' +
+      ',"alert_time":"'  + alert_ts + '"}',
+      alert.freq_once_per_bar
+    )
+
+if isBear
+    barsSinceEntry := 0
+    alert(
+      '{"symbol":"'      + syminfo.ticker +
+      '","action":"BUY_PUT"' +
+      ',"option_type":"put"' +
+      ',"strike":'       + str.tostring(putStrike, "#.##") +
+      ',"dte":"'         + dteMode + '"' +
+      ',"contracts":'    + str.tostring(contracts) +
+      ',"atm_strike":'   + str.tostring(atmStrike, "#.##") +
+      ',"atr":'          + str.tostring(atr, "#.##") +
+      ',"vol_ratio":'    + str.tostring(volRatio, "#.##") +
+      ',"price":'        + str.tostring(close, "#.##") +
+      ',"be_move":'      + str.tostring(beMoveEstimate, "#.##") +
+      ',"session":"'     + (inTradeWindow ? "morning" : "afternoon") + '"' +
+      ',"alert_time":"'  + alert_ts + '"}',
+      alert.freq_once_per_bar
+    )
+
+// EOD — exit all options before close
+if isMarketClose
+    alert(
+      '{"symbol":"' + syminfo.ticker + '","action":"CLOSE_ALL_OPTIONS","reason":"EOD","alert_time":"' + alert_ts + '"}',
+      alert.freq_once_per_bar
+    )
+
+// ──────────────────────────────────────────────
+// VISUALS
+// ──────────────────────────────────────────────
+plot(inTradeWindow  ? openHigh : na, color=color.green, style=plot.style_linebr, title="Morning High")
+plot(inTradeWindow  ? openLow  : na, color=color.red,   style=plot.style_linebr, title="Morning Low")
+plot(inTradeWindow  ? openHigh + breakoutBuffer : na, color=color.new(color.green, 70), style=plot.style_linebr, title="Call Trigger")
+plot(inTradeWindow  ? openLow  - breakoutBuffer : na, color=color.new(color.red,   70), style=plot.style_linebr, title="Put Trigger")
+
+plot(isMiddayWindow    ? middayHigh : na, color=color.new(color.orange, 20), style=plot.style_linebr, title="Midday High")
+plot(isMiddayWindow    ? middayLow  : na, color=color.new(color.orange, 20), style=plot.style_linebr, title="Midday Low")
+plot(isAfternoonWindow ? middayHigh + breakoutBuffer : na, color=color.new(color.orange, 0), style=plot.style_linebr, title="PM Call Trigger")
+plot(isAfternoonWindow ? middayLow  - breakoutBuffer : na, color=color.new(color.orange, 0), style=plot.style_linebr, title="PM Put Trigger")
+
+plot(emaFast, color=color.new(color.aqua,   60), title="Fast EMA")
+plot(emaSlow, color=color.new(color.purple, 60), title="Slow EMA")
+
+// Strike labels on signal bars
+if isBull
+    label.new(bar_index, low - atr,
+      "CALL $" + str.tostring(callStrike, "#") + "\n" + dteMode + " | " + str.tostring(contracts) + "x",
+      style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+
+if isBear
+    label.new(bar_index, high + atr,
+      "PUT $" + str.tostring(putStrike, "#") + "\n" + dteMode + " | " + str.tostring(contracts) + "x",
+      style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+
+plotshape(isBull, style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.normal, title="Call Signal")
+plotshape(isBear, style=shape.triangledown, location=location.abovebar, color=color.red,   size=size.normal, title="Put Signal")
