@@ -23,13 +23,11 @@ contracts        = input.int(1,     title="Number of Contracts", minval=1, maxva
 // ──────────────────────────────────────────────
 // TIME WINDOWS (ET)
 // ──────────────────────────────────────────────
-// +1 min on is_session_start ensures the boundary bar is inside the window on all timeframes.
-// +1 min shift on midday/afternoon boundary ensures middayHigh/Low are fully settled
-// before the first afternoon crossover can fire (fixes 1-bar execution gap on 1-min charts).
-is_session_start  = not na(time(timeframe.period, "0930-0936:23456", "America/New_York"))
+// Shrink-by-1-min: each window ends 1 bar before the next begins — no overlap on any timeframe.
+is_session_start  = not na(time(timeframe.period, "0930-0934:23456", "America/New_York"))
 inTradeWindow     = not na(time(timeframe.period, "0935-1100:23456", "America/New_York"))
-isMiddayWindow    = not na(time(timeframe.period, "1100-1231:23456", "America/New_York"))
-isAfternoonWindow = not na(time(timeframe.period, "1231-1550:23456", "America/New_York"))
+isMiddayWindow    = not na(time(timeframe.period, "1100-1229:23456", "America/New_York"))
+isAfternoonWindow = not na(time(timeframe.period, "1230-1550:23456", "America/New_York"))
 isMarketClose     = not na(time(timeframe.period, "1555-1600:23456", "America/New_York"))
 isNewDay          = ta.change(time("D", "America/New_York")) != 0
 
@@ -148,8 +146,8 @@ if isBear
       alert.freq_once_per_bar
     )
 
-// EOD — exit all options before close (fires exactly once per day)
-if isMarketClose and not eodAlertSent
+// EOD — exit all options before close (fires exactly once per day, on confirmed bar only)
+if isMarketClose and not eodAlertSent and barstate.isconfirmed
     eodAlertSent := true
     alert(
       '{"symbol":"' + syminfo.ticker + '","action":"CLOSE_ALL_OPTIONS","reason":"EOD","alert_time":"' + alert_ts + '","secret":"' + webhookSecret + '"}',
@@ -159,13 +157,13 @@ if isMarketClose and not eodAlertSent
 // ──────────────────────────────────────────────
 // VISUALS
 // ──────────────────────────────────────────────
-plot(inTradeWindow  ? openHigh : na, color=color.green, style=plot.style_linebr, title="Morning High")
-plot(inTradeWindow  ? openLow  : na, color=color.red,   style=plot.style_linebr, title="Morning Low")
+plot(inTradeWindow or isMiddayWindow or isAfternoonWindow ? openHigh : na, color=color.green, style=plot.style_linebr, title="Morning High")
+plot(inTradeWindow or isMiddayWindow or isAfternoonWindow ? openLow  : na, color=color.red,   style=plot.style_linebr, title="Morning Low")
 plot(inTradeWindow  ? openHigh + breakoutBuffer : na, color=color.new(color.green, 70), style=plot.style_linebr, title="Call Trigger")
 plot(inTradeWindow  ? openLow  - breakoutBuffer : na, color=color.new(color.red,   70), style=plot.style_linebr, title="Put Trigger")
 
-plot(isMiddayWindow    ? middayHigh : na, color=color.new(color.orange, 20), style=plot.style_linebr, title="Midday High")
-plot(isMiddayWindow    ? middayLow  : na, color=color.new(color.orange, 20), style=plot.style_linebr, title="Midday Low")
+plot(isMiddayWindow or isAfternoonWindow ? middayHigh : na, color=color.new(color.orange, 20), style=plot.style_linebr, title="Midday High")
+plot(isMiddayWindow or isAfternoonWindow ? middayLow  : na, color=color.new(color.orange, 20), style=plot.style_linebr, title="Midday Low")
 plot(isAfternoonWindow ? middayHigh + breakoutBuffer : na, color=color.new(color.orange, 0), style=plot.style_linebr, title="PM Call Trigger")
 plot(isAfternoonWindow ? middayLow  - breakoutBuffer : na, color=color.new(color.orange, 0), style=plot.style_linebr, title="PM Put Trigger")
 
