@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -8,6 +9,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date
 from email.mime.text import MIMEText
+from logging.handlers import RotatingFileHandler
 from typing import Dict
 from zoneinfo import ZoneInfo
 
@@ -27,7 +29,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("options_engine.log"),
+        RotatingFileHandler("options_engine.log", maxBytes=10_000_000, backupCount=5),
         logging.StreamHandler(),
     ],
 )
@@ -254,7 +256,7 @@ def validate_freshness(payload: dict, received_at: datetime) -> datetime:
     except Exception:
         raise HTTPException(400, "Invalid alert_time.")
 
-def validate_market_hours():
+async def validate_market_hours():
     ny_tz   = ZoneInfo("America/New_York")
     now_ny  = datetime.now(ny_tz)
     if now_ny.weekday() >= 5:
@@ -263,6 +265,15 @@ def validate_market_hours():
     market_close = now_ny.replace(hour=16, minute=0,  second=0, microsecond=0)
     if not (market_open <= now_ny <= market_close):
         raise HTTPException(403, "Market closed.")
+    try:
+        clock = await alpaca(get_trading_client().get_clock)
+        if not clock.is_open:
+            raise HTTPException(403, "Alpaca reports market is closed.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Market clock check failed: {e}")
+        raise HTTPException(503, "Market clock check failed.")
 
 def past_options_cutoff() -> bool:
     ny_tz = ZoneInfo("America/New_York")
@@ -397,13 +408,14 @@ async def handle_eod_close(symbol: str, background_tasks: BackgroundTasks):
 
 async def process_options_entry(symbol: str, action: str, payload: dict, background_tasks: BackgroundTasks):
     received_at = datetime.now(timezone.utc)
-    alert_id    = f"{symbol}_{action}_{received_at.strftime('%Y%m%d%H%M%S')}"
+    raw         = f"{symbol}|{action}|{payload.get('alert_time')}|{payload.get('price')}|{payload.get('atr')}"
+    alert_id    = hashlib.sha256(raw.encode()).hexdigest()[:32]
 
     if not remember_alert(alert_id):
         return {"status": "ignored", "reason": "Duplicate alert.", "alert_id": alert_id}
 
     validate_freshness(payload, received_at)
-    validate_market_hours()
+    await validate_market_hours()
 
     # Time cutoff — no new 0DTE entries after 2:30 PM ET
     if past_options_cutoff():

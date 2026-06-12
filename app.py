@@ -9,6 +9,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
+from logging.handlers import RotatingFileHandler
 from typing import Dict
 from zoneinfo import ZoneInfo
 
@@ -24,7 +25,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("trading_engine_monitor.log"),
+        RotatingFileHandler("trading_engine_monitor.log", maxBytes=10_000_000, backupCount=5),
         logging.StreamHandler(),
     ],
 )
@@ -198,7 +199,21 @@ def delete_processed_alert(alert_id):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok"}
+    try:
+        account = await alpaca_call(get_trading_client().get_account)
+        daily_pnl = float(account.equity) - float(account.last_equity)
+        circuit_breaker_active = daily_pnl <= DAILY_LOSS_LIMIT
+    except Exception:
+        daily_pnl = None
+        circuit_breaker_active = None
+    return {
+        "status": "ok",
+        "active_trades": list(active_trades.keys()),
+        "daily_pnl": round(daily_pnl, 2) if daily_pnl is not None else None,
+        "circuit_breaker_active": circuit_breaker_active,
+        "daily_loss_limit": DAILY_LOSS_LIMIT,
+        "daily_loss_counts": daily_loss_counts,
+    }
 
 def get_trading_client():
     global trading_client
@@ -895,13 +910,14 @@ async def monitor_and_adjust_stops():
 
                         exit_side = OrderSide.SELL if position_side == "long" else OrderSide.BUY
                         
+                        be_stop = round(entry_price - 0.01, 2) if position_side == "long" else round(entry_price + 0.01, 2)
                         new_trail = await alpaca_call(
                             client.submit_order,
                             order_data=StopOrderRequest(
                                 symbol=symbol,
                                 qty=position_abs_qty(pos),
                                 side=exit_side,
-                                stop_price=round(entry_price, 2), # Anchored exactly at the fill price
+                                stop_price=be_stop,
                                 time_in_force=TimeInForce.DAY,
                                 client_order_id=f"{trade['alert_id']}-be"
                             )
