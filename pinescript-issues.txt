@@ -1,0 +1,17 @@
+CRITICAL ISSUES IDENTIFIED IN YOUR ORIGINAL SCRIPT:
+
+1. INTRABAR FLICKER & REPAINTING RISK
+* Issue: You are using 'alert.freq_once_per_bar' combined with crossover/crossunder functions.
+* Impact: If the price breaks the high/low channel for a split second mid-bar, it instantly fires a live market order to Alpaca. If the price immediately retreats before the candle finishes, the signal will vanish from your chart. Your Python bot will be stuck in a losing trade that "never happened" on TradingView.
+
+2. FAILED COOLDOWN TRACKING LOOP
+* Issue: The statement 'var int barsSinceEntry = cooldownBars + 1' initializes your variable, but you never actually increment it bar-by-bar across the historical data loop.
+* Impact: The cooldown logic fails to function as a genuine protective rolling window. Once a trade triggers, the indicator will not track the exact bar delta properly across consecutive bars.
+
+3. REPEATED EOD LIQUIDATION WEBHOOKS
+* Issue: The 'isMarketClose' condition evaluates to true during every single real-time data tick throughout that final 5-minute window.
+* Impact: Combined with 'freq_once_per_bar', your chart will spam multiple separate "exit" JSON payloads to your Python server within those final minutes, potentially causing your API execution script to throw error codes or attempt double-liquidations.
+
+4. NON-DETERMINISTIC CLOCK TIMESTAMPING
+* Issue: You are using 'str.format_time(timenow, ...)' to build your 'alert_ts' payload string.
+* Impact: 'timenow' tracks the live physical machine wall-clock time rather than the immutable historical exchange bar time. This renders your script logs completely useless for historical analysis or synchronization debugging on your Python server.
