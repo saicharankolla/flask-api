@@ -13,13 +13,13 @@ minVolRatio      = input.float(0.65, title="Minimum Volume Ratio for Breakout")
 cooldownBars     = input.int(3, title="Bars Cooldown Between Trades")
 
 // --- Structural Time Filters (Exchange Timezone) ---
-// +1 min on is_session_start ensures the boundary bar is inside the window on all timeframes.
-// +1 min shift on midday/afternoon boundary ensures middayHigh/Low are fully settled
-// before the first afternoon crossover can fire (fixes 1-bar execution gap on 1-min charts).
-is_session_start  = not na(time(timeframe.period, "0930-0936:23456", "America/New_York"))
+// Shrink-by-1-min approach: each window ends 1 bar before the next begins.
+// This avoids overlap on 5-min charts where "extend" would put the 9:35 bar
+// inside both is_session_start and inTradeWindow simultaneously.
+is_session_start  = not na(time(timeframe.period, "0930-0934:23456", "America/New_York"))
 inTradeWindow     = not na(time(timeframe.period, "0935-1100:23456", "America/New_York"))
-isMiddayWindow    = not na(time(timeframe.period, "1100-1231:23456", "America/New_York"))
-isAfternoonWindow = not na(time(timeframe.period, "1231-1550:23456", "America/New_York"))
+isMiddayWindow    = not na(time(timeframe.period, "1100-1229:23456", "America/New_York"))
+isAfternoonWindow = not na(time(timeframe.period, "1230-1550:23456", "America/New_York"))
 isMarketClose     = not na(time(timeframe.period, "1555-1600:23456", "America/New_York"))
 isNewDay          = ta.change(time("D", "America/New_York")) != 0
 
@@ -116,20 +116,19 @@ if afternoonShort
 // FIX 3: eodAlertSent flag ensures exactly one EOD webhook fires per day.
 // Without it, every bar (and every tick on live data) inside the 1555-1600 window
 // fires a separate exit payload, causing duplicate liquidation attempts on the server.
-if isMarketClose and not eodAlertSent
+if isMarketClose and not eodAlertSent and barstate.isconfirmed
     eodAlertSent := true
     alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "EOD Liquidation", "alert_time": "' + alert_ts + '", "secret": "' + webhookSecret + '"}', alert.freq_once_per_bar)
 
 // --- Visual Chart Elements ---
-plot(inTradeWindow  ? openHigh : na, color=color.green, style=plot.style_linebr, title="Morning High")
-plot(inTradeWindow  ? openLow  : na, color=color.red,   style=plot.style_linebr, title="Morning Low")
+plot(inTradeWindow or isMiddayWindow ? openHigh : na, color=color.green, style=plot.style_linebr, title="Morning High")
+plot(inTradeWindow or isMiddayWindow ? openLow  : na, color=color.red,   style=plot.style_linebr, title="Morning Low")
 
-plot(inTradeWindow  ? openHigh + breakoutBuffer : na, color=color.new(color.green, 70), style=plot.style_linebr, title="High Trigger Buffer")
-plot(inTradeWindow  ? openLow  - breakoutBuffer : na, color=color.new(color.red,   70), style=plot.style_linebr, title="Low Trigger Buffer")
+plot(inTradeWindow ? openHigh + breakoutBuffer : na, color=color.new(color.green, 70), style=plot.style_linebr, title="High Trigger Buffer")
+plot(inTradeWindow ? openLow  - breakoutBuffer : na, color=color.new(color.red,   70), style=plot.style_linebr, title="Low Trigger Buffer")
 
-// Show midday range while it's building, then show trigger levels in afternoon window
-plot(isMiddayWindow    ? middayHigh : na, color=color.new(color.orange, 20), style=plot.style_linebr, title="Midday High (Building)")
-plot(isMiddayWindow    ? middayLow  : na, color=color.new(color.orange, 20), style=plot.style_linebr, title="Midday Low (Building)")
+plot(isMiddayWindow or isAfternoonWindow ? middayHigh : na, color=color.new(color.orange, 20), style=plot.style_linebr, title="Midday High")
+plot(isMiddayWindow or isAfternoonWindow ? middayLow  : na, color=color.new(color.orange, 20), style=plot.style_linebr, title="Midday Low")
 plot(isAfternoonWindow ? middayHigh + breakoutBuffer : na, color=color.new(color.orange, 0),  style=plot.style_linebr, title="Afternoon High Trigger")
 plot(isAfternoonWindow ? middayLow  - breakoutBuffer : na, color=color.new(color.orange, 0),  style=plot.style_linebr, title="Afternoon Low Trigger")
 
