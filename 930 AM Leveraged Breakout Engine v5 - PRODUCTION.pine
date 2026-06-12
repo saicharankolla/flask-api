@@ -8,25 +8,32 @@ bufferMultiplier = input.float(0.1, title="False Breakout ATR Buffer (e.g. 0.1 =
 trendEmaFast     = input.int(5, title="Trend Filter Fast EMA Period")
 trendEmaSlow     = input.int(20, title="Trend Filter Slow EMA Period")
 volMovingAvg     = input.int(20, title="Volume Moving Average Period")
-minVolRatio      = input.float(0.8, title="Minimum Volume Ratio for Breakout")
+minVolRatio      = input.float(0.65, title="Minimum Volume Ratio for Breakout")
 cooldownBars     = input.int(3, title="Bars Cooldown Between Trades")
 
 // --- Structural Time Filters (Exchange Timezone) ---
-is_session_start = not na(time(timeframe.period, "0930-0935:23456", "America/New_York"))
-inTradeWindow    = not na(time(timeframe.period, "0935-1550:23456", "America/New_York"))
-isMarketClose    = not na(time(timeframe.period, "1555-1600:23456", "America/New_York"))
-isNewDay         = ta.change(time("D", "America/New_York")) != 0
+is_session_start  = not na(time(timeframe.period, "0930-0935:23456", "America/New_York"))
+inTradeWindow     = not na(time(timeframe.period, "0935-1100:23456", "America/New_York"))
+isMiddayWindow    = not na(time(timeframe.period, "1100-1230:23456", "America/New_York"))
+isAfternoonWindow = not na(time(timeframe.period, "1230-1550:23456", "America/New_York"))
+isMarketClose     = not na(time(timeframe.period, "1555-1600:23456", "America/New_York"))
+isNewDay          = ta.change(time("D", "America/New_York")) != 0
 
 // --- Persistent Range & State Variables ---
 var float openHigh     = na
 var float openLow      = na
+var float middayHigh   = na
+var float middayLow    = na
 var int barsSinceEntry = cooldownBars + 1
 
 if isNewDay
-    openHigh := na
-    openLow  := na
+    openHigh       := na
+    openLow        := na
+    middayHigh     := na
+    middayLow      := na
     barsSinceEntry := cooldownBars + 1
 
+// Capture 9:30–9:35 opening range
 if is_session_start
     if na(openHigh)
         openHigh := high
@@ -34,6 +41,15 @@ if is_session_start
     else
         openHigh := math.max(openHigh, high)
         openLow  := math.min(openLow, low)
+
+// Capture 11:00–12:30 midday consolidation range
+if isMiddayWindow
+    if na(middayHigh)
+        middayHigh := high
+        middayLow  := low
+    else
+        middayHigh := math.max(middayHigh, high)
+        middayLow  := math.min(middayLow, low)
 
 // --- Volatility, Volume, and Buffer Calculations ---
 atr            = ta.atr(atrPeriod)
@@ -49,11 +65,17 @@ emaSlow        = ta.ema(close, trendEmaSlow)
 trendBullish   = emaFast > emaSlow
 trendBearish   = emaFast < emaSlow
 
-// --- Execution Logic ---
+// --- Cooldown Counter (increments every bar, resets on entry) ---
+barsSinceEntry := barsSinceEntry + 1
 cooldownClear  = barsSinceEntry > cooldownBars
 
-longCondition  = ta.crossover(close, openHigh + breakoutBuffer) and inTradeWindow and cooldownClear and not na(openHigh) and volSufficient and trendBullish
-shortCondition = ta.crossunder(close, openLow - breakoutBuffer) and inTradeWindow and cooldownClear and not na(openLow) and volSufficient and trendBearish
+// --- Morning Opening Range Breakout (9:35 AM – 11:00 AM) ---
+longCondition  = ta.crossover(close, openHigh + breakoutBuffer)  and inTradeWindow     and cooldownClear and not na(openHigh)   and volSufficient and trendBullish
+shortCondition = ta.crossunder(close, openLow  - breakoutBuffer) and inTradeWindow     and cooldownClear and not na(openLow)    and volSufficient and trendBearish
+
+// --- Afternoon Midday Consolidation Breakout (12:30 PM – 3:50 PM) ---
+afternoonLong  = ta.crossover(close, middayHigh + breakoutBuffer) and isAfternoonWindow and cooldownClear and not na(middayHigh) and volSufficient and trendBullish
+afternoonShort = ta.crossunder(close, middayLow  - breakoutBuffer) and isAfternoonWindow and cooldownClear and not na(middayLow)  and volSufficient and trendBearish
 
 // --- Alert & Webhook Generation (Entry Only — Alpaca Owns All Exits) ---
 alert_ts = str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "UTC")
@@ -66,19 +88,33 @@ if shortCondition
     barsSinceEntry := 0
     alert('{"symbol": "' + syminfo.ticker + '", "side": "sell", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
 
+if afternoonLong
+    barsSinceEntry := 0
+    alert('{"symbol": "' + syminfo.ticker + '", "side": "buy", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
+
+if afternoonShort
+    barsSinceEntry := 0
+    alert('{"symbol": "' + syminfo.ticker + '", "side": "sell", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
+
 // --- End of Day Safety Liquidation ---
 if isMarketClose
     alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "EOD Liquidation", "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
 
 // --- Visual Chart Elements ---
-plot(inTradeWindow ? openHigh : na, color=color.green, style=plot.style_linebr, title="Morning High")
-plot(inTradeWindow ? openLow : na, color=color.red, style=plot.style_linebr, title="Morning Low")
+plot(inTradeWindow  ? openHigh : na, color=color.green, style=plot.style_linebr, title="Morning High")
+plot(inTradeWindow  ? openLow  : na, color=color.red,   style=plot.style_linebr, title="Morning Low")
 
-plot(inTradeWindow ? openHigh + breakoutBuffer : na, color=color.new(color.green, 70), style=plot.style_linebr, title="High Trigger Buffer")
-plot(inTradeWindow ? openLow - breakoutBuffer : na, color=color.new(color.red, 70), style=plot.style_linebr, title="Low Trigger Buffer")
+plot(inTradeWindow  ? openHigh + breakoutBuffer : na, color=color.new(color.green, 70), style=plot.style_linebr, title="High Trigger Buffer")
+plot(inTradeWindow  ? openLow  - breakoutBuffer : na, color=color.new(color.red,   70), style=plot.style_linebr, title="Low Trigger Buffer")
 
-plot(emaFast, color=color.new(color.aqua, 60), title="Fast EMA")
+// Show midday range while it's building, then show trigger levels in afternoon window
+plot(isMiddayWindow    ? middayHigh : na, color=color.new(color.orange, 20), style=plot.style_linebr, title="Midday High (Building)")
+plot(isMiddayWindow    ? middayLow  : na, color=color.new(color.orange, 20), style=plot.style_linebr, title="Midday Low (Building)")
+plot(isAfternoonWindow ? middayHigh + breakoutBuffer : na, color=color.new(color.orange, 0),  style=plot.style_linebr, title="Afternoon High Trigger")
+plot(isAfternoonWindow ? middayLow  - breakoutBuffer : na, color=color.new(color.orange, 0),  style=plot.style_linebr, title="Afternoon Low Trigger")
+
+plot(emaFast, color=color.new(color.aqua,   60), title="Fast EMA")
 plot(emaSlow, color=color.new(color.purple, 60), title="Slow EMA")
 
-plotshape(longCondition, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, title="Long Entry")
-plotshape(shortCondition, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, title="Short Entry")
+plotshape(longCondition  or afternoonLong,  style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.small, title="Long Entry")
+plotshape(shortCondition or afternoonShort, style=shape.triangledown, location=location.abovebar, color=color.red,   size=size.small, title="Short Entry")

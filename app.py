@@ -35,7 +35,7 @@ symbol_locks = {symbol: asyncio.Lock() for symbol in SYMBOLS}
 EXECUTION_LOCK = asyncio.Lock()
 
 MAX_TRADE_ALLOCATION = float(os.environ.get("MAX_TRADE_ALLOCATION", "10000"))
-MAX_RISK_PER_TRADE = float(os.environ.get("MAX_RISK_PER_TRADE", "100"))
+MAX_RISK_PER_TRADE = float(os.environ.get("MAX_RISK_PER_TRADE", "150"))
 DAILY_LOSS_LIMIT = float(os.environ.get("DAILY_LOSS_LIMIT", "-300"))
 MAX_ALERT_AGE_SECONDS = int(os.environ.get("MAX_ALERT_AGE_SECONDS", "10"))
 MAX_SLIPPAGE_BPS = float(os.environ.get("MAX_SLIPPAGE_BPS", "50"))
@@ -661,7 +661,7 @@ async def process_symbol_alert(symbol, side, payload, background_tasks):
         return {"status": "blocked", "reason": f"Max losses reached for {symbol} today", "alert_id": alert_id}
 
     losses_today = get_daily_loss_count(symbol)
-    time_scale = get_time_of_day_scale() if losses_today > 0 else 1.0
+    time_scale = get_time_of_day_scale()
     if time_scale <= 0.0:
         logger.warning(f"No new entries after {NO_NEW_ENTRIES_AFTER_HOUR}:{NO_NEW_ENTRIES_AFTER_MINUTE:02d} ET. Blocking {symbol}.")
         return {"status": "blocked", "reason": "Past new-entry cutoff time", "alert_id": alert_id}
