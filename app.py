@@ -37,7 +37,7 @@ EXECUTION_LOCK = asyncio.Lock()
 MAX_TRADE_ALLOCATION = float(os.environ.get("MAX_TRADE_ALLOCATION", "10000"))
 MAX_RISK_PER_TRADE = float(os.environ.get("MAX_RISK_PER_TRADE", "150"))
 DAILY_LOSS_LIMIT = float(os.environ.get("DAILY_LOSS_LIMIT", "-300"))
-MAX_ALERT_AGE_SECONDS = int(os.environ.get("MAX_ALERT_AGE_SECONDS", "10"))
+MAX_ALERT_AGE_SECONDS = int(os.environ.get("MAX_ALERT_AGE_SECONDS", "60"))
 MAX_SLIPPAGE_BPS = float(os.environ.get("MAX_SLIPPAGE_BPS", "50"))
 IDEMPOTENCY_TTL_SECONDS = int(os.environ.get("IDEMPOTENCY_TTL_SECONDS", "300"))
 ALPACA_PAPER = os.environ.get("ALPACA_PAPER", "true").lower() == "true"
@@ -74,6 +74,7 @@ ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
 GMAIL_USER = os.environ.get("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 SMS_GATEWAY = os.environ.get("SMS_GATEWAY", "4436429291@tmomail.net")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")  # set this + embed in TradingView alert JSON
 
 trading_client = None
 data_client = None
@@ -602,6 +603,9 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Malformed JSON object payload.")
+
+    if WEBHOOK_SECRET and payload.get("secret") != WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized.")
 
     logger.info(f"Webhook request received: {payload}")
 

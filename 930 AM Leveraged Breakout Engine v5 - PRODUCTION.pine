@@ -2,6 +2,7 @@
 indicator("930 AM Leveraged Breakout Engine v8 - PRODUCTION", overlay=true)
 
 // --- Inputs ---
+webhookSecret    = input.string("", title="Webhook Secret (must match WEBHOOK_SECRET env var on server)")
 atrPeriod        = input.int(14, title="ATR Period for Volatility Tracking")
 bufferMultiplier = input.float(0.1, title="False Breakout ATR Buffer (e.g. 0.1 = 10% of ATR)", minval=0.0)
 
@@ -97,19 +98,19 @@ afternoonShort = ta.crossunder(close, middayLow  - breakoutBuffer) and isAfterno
 // --- Alert & Webhook Generation (Entry Only — Alpaca Owns All Exits) ---
 if longCondition
     barsSinceEntry := 0
-    alert('{"symbol": "' + syminfo.ticker + '", "side": "buy", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
+    alert('{"symbol": "' + syminfo.ticker + '", "side": "buy", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '", "secret": "' + webhookSecret + '"}', alert.freq_once_per_bar)
 
 if shortCondition
     barsSinceEntry := 0
-    alert('{"symbol": "' + syminfo.ticker + '", "side": "sell", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
+    alert('{"symbol": "' + syminfo.ticker + '", "side": "sell", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '", "secret": "' + webhookSecret + '"}', alert.freq_once_per_bar)
 
 if afternoonLong
     barsSinceEntry := 0
-    alert('{"symbol": "' + syminfo.ticker + '", "side": "buy", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
+    alert('{"symbol": "' + syminfo.ticker + '", "side": "buy", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '", "secret": "' + webhookSecret + '"}', alert.freq_once_per_bar)
 
 if afternoonShort
     barsSinceEntry := 0
-    alert('{"symbol": "' + syminfo.ticker + '", "side": "sell", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
+    alert('{"symbol": "' + syminfo.ticker + '", "side": "sell", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '", "secret": "' + webhookSecret + '"}', alert.freq_once_per_bar)
 
 // --- End of Day Safety Liquidation ---
 // FIX 3: eodAlertSent flag ensures exactly one EOD webhook fires per day.
@@ -117,7 +118,7 @@ if afternoonShort
 // fires a separate exit payload, causing duplicate liquidation attempts on the server.
 if isMarketClose and not eodAlertSent
     eodAlertSent := true
-    alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "EOD Liquidation", "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
+    alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "EOD Liquidation", "alert_time": "' + alert_ts + '", "secret": "' + webhookSecret + '"}', alert.freq_once_per_bar)
 
 // --- Visual Chart Elements ---
 plot(inTradeWindow  ? openHigh : na, color=color.green, style=plot.style_linebr, title="Morning High")

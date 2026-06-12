@@ -44,17 +44,21 @@ STOP_LOSS_PCT             = float(os.environ.get("STOP_LOSS_PCT",             "0
 PARTIAL_TP_PCT            = float(os.environ.get("PARTIAL_TP_PCT",            "1.50"))  # take half off at 150% gain
 FULL_TP_PCT               = float(os.environ.get("FULL_TP_PCT",               "2.50"))  # close all at 250% gain
 DAILY_LOSS_LIMIT          = float(os.environ.get("DAILY_OPTIONS_LOSS_LIMIT",  "-500"))  # circuit breaker
-MAX_ALERT_AGE_SECONDS     = int(os.environ.get("MAX_ALERT_AGE_SECONDS",       "10"))
+MAX_ALERT_AGE_SECONDS     = int(os.environ.get("MAX_ALERT_AGE_SECONDS",       "60"))
 IDEMPOTENCY_TTL_SECONDS   = int(os.environ.get("IDEMPOTENCY_TTL_SECONDS",     "300"))
 HEARTBEAT_INTERVAL        = float(os.environ.get("HEARTBEAT_INTERVAL",        "10"))
 ALPACA_PAPER              = os.environ.get("ALPACA_PAPER", "true").lower() == "true"
 STATE_DB_PATH             = os.environ.get("OPTIONS_DB_PATH", "options_state.sqlite3")
+
+NO_NEW_ENTRIES_AFTER_HOUR   = int(os.environ.get("NO_NEW_ENTRIES_AFTER_HOUR",   "14"))
+NO_NEW_ENTRIES_AFTER_MINUTE = int(os.environ.get("NO_NEW_ENTRIES_AFTER_MINUTE", "30"))
 
 ALPACA_API_KEY    = os.environ.get("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
 GMAIL_USER        = os.environ.get("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD= os.environ.get("GMAIL_APP_PASSWORD")
 SMS_GATEWAY       = os.environ.get("SMS_GATEWAY", "4436429291@tmomail.net")
+WEBHOOK_SECRET    = os.environ.get("WEBHOOK_SECRET")
 
 trading_client    = None
 data_client       = None
@@ -260,6 +264,12 @@ def validate_market_hours():
     if not (market_open <= now_ny <= market_close):
         raise HTTPException(403, "Market closed.")
 
+def past_options_cutoff() -> bool:
+    ny_tz = ZoneInfo("America/New_York")
+    now_ny = datetime.now(ny_tz)
+    cutoff = NO_NEW_ENTRIES_AFTER_HOUR * 60 + NO_NEW_ENTRIES_AFTER_MINUTE
+    return (now_ny.hour * 60 + now_ny.minute) >= cutoff
+
 def resolve_expiry(dte_mode: str) -> date:
     ny_tz = ZoneInfo("America/New_York")
     today = datetime.now(ny_tz).date()
@@ -352,6 +362,9 @@ async def handle_options_webhook(request: Request, background_tasks: BackgroundT
     except Exception:
         raise HTTPException(400, "Malformed JSON payload.")
 
+    if WEBHOOK_SECRET and payload.get("secret") != WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized.")
+
     logger.info(f"Options webhook: {payload}")
 
     symbol = payload.get("symbol")
@@ -391,6 +404,11 @@ async def process_options_entry(symbol: str, action: str, payload: dict, backgro
 
     validate_freshness(payload, received_at)
     validate_market_hours()
+
+    # Time cutoff — no new 0DTE entries after 2:30 PM ET
+    if past_options_cutoff():
+        logger.warning(f"Options entry blocked for {symbol}: past {NO_NEW_ENTRIES_AFTER_HOUR}:{NO_NEW_ENTRIES_AFTER_MINUTE:02d} ET cutoff.")
+        return {"status": "blocked", "reason": f"No new options entries after {NO_NEW_ENTRIES_AFTER_HOUR}:{NO_NEW_ENTRIES_AFTER_MINUTE:02d} ET.", "alert_id": alert_id}
 
     # Circuit breaker
     if daily_pnl <= DAILY_LOSS_LIMIT:
