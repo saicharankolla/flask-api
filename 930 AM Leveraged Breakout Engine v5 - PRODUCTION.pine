@@ -20,11 +20,12 @@ isMarketClose     = not na(time(timeframe.period, "1555-1600:23456", "America/Ne
 isNewDay          = ta.change(time("D", "America/New_York")) != 0
 
 // --- Persistent Range & State Variables ---
-var float openHigh     = na
-var float openLow      = na
-var float middayHigh   = na
-var float middayLow    = na
-var int barsSinceEntry = cooldownBars + 1
+var float openHigh      = na
+var float openLow       = na
+var float middayHigh    = na
+var float middayLow     = na
+var int   barsSinceEntry = cooldownBars + 1
+var bool  eodAlertSent  = false   // FIX 3: prevents EOD webhook spam across multiple bars/ticks
 
 if isNewDay
     openHigh       := na
@@ -32,6 +33,7 @@ if isNewDay
     middayHigh     := na
     middayLow      := na
     barsSinceEntry := cooldownBars + 1
+    eodAlertSent   := false        // FIX 3: reset EOD flag each new trading day
 
 // Capture 9:30–9:35 opening range
 if is_session_start
@@ -66,20 +68,30 @@ trendBullish   = emaFast > emaSlow
 trendBearish   = emaFast < emaSlow
 
 // --- Cooldown Counter (increments every bar, resets on entry) ---
+// FIX 2 (already resolved): increment runs every bar so cooldown is a true rolling window
 barsSinceEntry := barsSinceEntry + 1
 cooldownClear  = barsSinceEntry > cooldownBars
 
+// --- FIX 4: Deterministic bar-close timestamp instead of live wall-clock timenow ---
+// time_close is the immutable exchange timestamp of when this bar ended.
+// timenow was the physical machine clock at the moment the script ran — non-reproducible in history.
+alert_ts = str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "UTC")
+
+// --- FIX 1: barstate.isconfirmed gates all signals to closed bars only ---
+// crossover/crossunder can trigger on any intrabar tick mid-candle.
+// Without this guard, a price spike that retreats before bar close sends a live Alpaca
+// order for a signal that will vanish from the chart when the bar finalises.
+// barstate.isconfirmed is true only on the final (closing) tick of each bar.
+
 // --- Morning Opening Range Breakout (9:35 AM – 11:00 AM) ---
-longCondition  = ta.crossover(close, openHigh + breakoutBuffer)  and inTradeWindow     and cooldownClear and not na(openHigh)   and volSufficient and trendBullish
-shortCondition = ta.crossunder(close, openLow  - breakoutBuffer) and inTradeWindow     and cooldownClear and not na(openLow)    and volSufficient and trendBearish
+longCondition  = ta.crossover(close, openHigh + breakoutBuffer)  and inTradeWindow     and cooldownClear and not na(openHigh)   and volSufficient and trendBullish and barstate.isconfirmed
+shortCondition = ta.crossunder(close, openLow  - breakoutBuffer) and inTradeWindow     and cooldownClear and not na(openLow)    and volSufficient and trendBearish and barstate.isconfirmed
 
 // --- Afternoon Midday Consolidation Breakout (12:30 PM – 3:50 PM) ---
-afternoonLong  = ta.crossover(close, middayHigh + breakoutBuffer) and isAfternoonWindow and cooldownClear and not na(middayHigh) and volSufficient and trendBullish
-afternoonShort = ta.crossunder(close, middayLow  - breakoutBuffer) and isAfternoonWindow and cooldownClear and not na(middayLow)  and volSufficient and trendBearish
+afternoonLong  = ta.crossover(close, middayHigh + breakoutBuffer) and isAfternoonWindow and cooldownClear and not na(middayHigh) and volSufficient and trendBullish and barstate.isconfirmed
+afternoonShort = ta.crossunder(close, middayLow  - breakoutBuffer) and isAfternoonWindow and cooldownClear and not na(middayLow)  and volSufficient and trendBearish and barstate.isconfirmed
 
 // --- Alert & Webhook Generation (Entry Only — Alpaca Owns All Exits) ---
-alert_ts = str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "UTC")
-
 if longCondition
     barsSinceEntry := 0
     alert('{"symbol": "' + syminfo.ticker + '", "side": "buy", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
@@ -97,7 +109,11 @@ if afternoonShort
     alert('{"symbol": "' + syminfo.ticker + '", "side": "sell", "price": ' + str.tostring(close) + ', "atr": ' + str.tostring(atr) + ', "vol_ratio": ' + str.tostring(volRatio, "#.##") + ', "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
 
 // --- End of Day Safety Liquidation ---
-if isMarketClose
+// FIX 3: eodAlertSent flag ensures exactly one EOD webhook fires per day.
+// Without it, every bar (and every tick on live data) inside the 1555-1600 window
+// fires a separate exit payload, causing duplicate liquidation attempts on the server.
+if isMarketClose and not eodAlertSent
+    eodAlertSent := true
     alert('{"symbol": "' + syminfo.ticker + '", "side": "exit", "reason": "EOD Liquidation", "alert_time": "' + alert_ts + '"}', alert.freq_once_per_bar)
 
 // --- Visual Chart Elements ---

@@ -37,6 +37,7 @@ var float openLow      = na
 var float middayHigh   = na
 var float middayLow    = na
 var int barsSinceEntry = cooldownBars + 1
+var bool eodAlertSent  = false
 
 if isNewDay
     openHigh       := na
@@ -44,6 +45,7 @@ if isNewDay
     middayHigh     := na
     middayLow      := na
     barsSinceEntry := cooldownBars + 1
+    eodAlertSent   := false
 
 if is_session_start
     openHigh := na(openHigh) ? high : math.max(openHigh, high)
@@ -72,10 +74,10 @@ trendBearish   = emaFast < emaSlow
 barsSinceEntry := barsSinceEntry + 1
 cooldownClear  = barsSinceEntry > cooldownBars
 
-longCondition   = ta.crossover(close,  openHigh + breakoutBuffer)  and inTradeWindow     and cooldownClear and not na(openHigh)   and volSufficient and trendBullish
-shortCondition  = ta.crossunder(close, openLow  - breakoutBuffer)  and inTradeWindow     and cooldownClear and not na(openLow)    and volSufficient and trendBearish
-afternoonLong   = ta.crossover(close,  middayHigh + breakoutBuffer) and isAfternoonWindow and cooldownClear and not na(middayHigh) and volSufficient and trendBullish
-afternoonShort  = ta.crossunder(close, middayLow  - breakoutBuffer) and isAfternoonWindow and cooldownClear and not na(middayLow)  and volSufficient and trendBearish
+longCondition   = ta.crossover(close,  openHigh + breakoutBuffer)  and inTradeWindow     and cooldownClear and not na(openHigh)   and volSufficient and trendBullish and barstate.isconfirmed
+shortCondition  = ta.crossunder(close, openLow  - breakoutBuffer)  and inTradeWindow     and cooldownClear and not na(openLow)    and volSufficient and trendBearish and barstate.isconfirmed
+afternoonLong   = ta.crossover(close,  middayHigh + breakoutBuffer) and isAfternoonWindow and cooldownClear and not na(middayHigh) and volSufficient and trendBullish and barstate.isconfirmed
+afternoonShort  = ta.crossunder(close, middayLow  - breakoutBuffer) and isAfternoonWindow and cooldownClear and not na(middayLow)  and volSufficient and trendBearish and barstate.isconfirmed
 
 isBull = longCondition  or afternoonLong
 isBear = shortCondition or afternoonShort
@@ -100,7 +102,7 @@ beMoveEstimate  = atrPremiumProxy
 // ──────────────────────────────────────────────
 // ALERT PAYLOADS
 // ──────────────────────────────────────────────
-alert_ts = str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "UTC")
+alert_ts = str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "UTC")
 
 if isBull
     barsSinceEntry := 0
@@ -140,8 +142,9 @@ if isBear
       alert.freq_once_per_bar
     )
 
-// EOD — exit all options before close
-if isMarketClose
+// EOD — exit all options before close (fires exactly once per day)
+if isMarketClose and not eodAlertSent
+    eodAlertSent := true
     alert(
       '{"symbol":"' + syminfo.ticker + '","action":"CLOSE_ALL_OPTIONS","reason":"EOD","alert_time":"' + alert_ts + '"}',
       alert.freq_once_per_bar
