@@ -12,10 +12,13 @@ minVolRatio      = input.float(0.65, title="Minimum Volume Ratio for Breakout")
 cooldownBars     = input.int(3, title="Bars Cooldown Between Trades")
 
 // --- Structural Time Filters (Exchange Timezone) ---
-is_session_start  = not na(time(timeframe.period, "0930-0935:23456", "America/New_York"))
+// +1 min on is_session_start ensures the boundary bar is inside the window on all timeframes.
+// +1 min shift on midday/afternoon boundary ensures middayHigh/Low are fully settled
+// before the first afternoon crossover can fire (fixes 1-bar execution gap on 1-min charts).
+is_session_start  = not na(time(timeframe.period, "0930-0936:23456", "America/New_York"))
 inTradeWindow     = not na(time(timeframe.period, "0935-1100:23456", "America/New_York"))
-isMiddayWindow    = not na(time(timeframe.period, "1100-1230:23456", "America/New_York"))
-isAfternoonWindow = not na(time(timeframe.period, "1230-1550:23456", "America/New_York"))
+isMiddayWindow    = not na(time(timeframe.period, "1100-1231:23456", "America/New_York"))
+isAfternoonWindow = not na(time(timeframe.period, "1231-1550:23456", "America/New_York"))
 isMarketClose     = not na(time(timeframe.period, "1555-1600:23456", "America/New_York"))
 isNewDay          = ta.change(time("D", "America/New_York")) != 0
 
