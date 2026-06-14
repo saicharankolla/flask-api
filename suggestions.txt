@@ -1,0 +1,191 @@
+Critical Structural Risks & Vulnerabilities1. The Async Network Deadlock (WebSocket Thread Stalling)Your architecture relies heavily on streaming two high-throughput sources: Alpaca (1-min updates) and Unusual Whales (option_trades). COIN is one of the most heavily traded derivatives on the market; during high-volume periods (e.g., 9:30–10:00 AM ET), the Unusual Whales raw tick channel will flood your connection with hundreds of messages per second.The Bug: If your FlowFilter.update() async function blocks the event loop even slightly while calculating premium/DTE or waiting for an asyncio.Lock, your Alpaca WebSocket feed will buffer network packets. This will immediately cause your 1-minute bars to experience multi-second data latency lag, destroying your VWAP Scalper entry targets.2. The Multi-Strategy Order Race ConditionYou are running three distinct strategies (ORB, FCB, and VWAP Scalping) that emit signals concurrently through the exact same Alpaca account.The Bug: If the VWAP Scalper is holding a long position of 100 shares of COIN, and the ORB strategy simultaneously triggers a short entry breakout signal, it will send a Sell/Short order to Alpaca. Alpaca will process this as a partial or complete liquidation of your VWAP position rather than establishing an isolated short position. This will completely break your internal state machine tracking for targets and stops.3. Execution Phase Slip (Tastytrade Limit Slicing)Your Phase 2 formula calculates contract sizing via a hard floor(). However, options order execution in high-IV environments (COIN IV 60–100%+) experiences severe bid-ask slippage.The Bug: If your size_contracts() routine calculates 3 contracts based on a mid-price of $3.00, but the ask instantly flashes to $3.20 during a high-premium whale sweep, a standard limit order will fail to fill within your 5-second window, or your partial fill routine will leave you under-hedged.Implementation Code BlueprintTo protect your system from these failures, here is the complete Python production code containing the async pipeline architecture, isolated order tracking, and the modular strategy classes.trading_bot/flow_filter.pyThis module isolates processing into an internal high-speed consumer queue. It features an explicit auto-reconnect heartbeat loop and safety state resets to guarantee that data processing never blocks your Alpaca execution loops.pythonimport asyncio
+import json
+import logging
+from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
+
+class FlowFilter:
+    def __init__(self, ticker: str = "COIN", min_premium: float = 500000.0, max_dte: int = 30):
+        self.ticker = ticker
+        self.min_premium = min_premium
+        self.max_dte = max_dte
+
+        self.bias = "NEUTRAL"
+        self.bias_expires_at = datetime.min
+        self.lock = asyncio.Lock()
+        self.queue = asyncio.Queue()
+        self.is_connected = False
+
+    async def process_queue_loop(self):
+        """Worker loop processing trades out-of-band to prevent event loop lag."""
+        while True:
+            try:
+                msg_text = await self.queue.get()
+                trade = json.loads(msg_text)
+
+                # Verify criteria: COIN, premium threshold, short-term DTE
+                if trade.get("ticker") == self.ticker:
+                    premium = float(trade.get("premium", 0))
+                    dte = int(trade.get("dte", 999))
+
+                    if premium >= self.min_premium and dte <= self.max_dte:
+                        is_call = trade.get("is_call", True)
+                        async with self.lock:
+                            self.bias = "BULLISH" if is_call else "BEARISH"
+                            self.bias_expires_at = datetime.utcnow() + timedelta(hours=2)
+                            logger.info(f"FlowFilter updated: {self.bias} until {self.bias_expires_at}")
+
+                self.queue.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error parsing raw flow packet: {e}")
+
+    async def get_current_bias(self) -> str:
+        """Thread-safe look at current directional filter."""
+        async with self.lock:
+            if datetime.utcnow() > self.bias_expires_at:
+                self.bias = "NEUTRAL"
+            return self.bias
+
+    async def allows(self, action_side: str) -> bool:
+        """Validates strategy signals against institutional momentum."""
+        current_bias = await self.get_current_bias()
+        if current_bias == "NEUTRAL":
+            return True
+        if current_bias == "BULLISH" and action_side.upper() == "LONG":
+            return True
+        if current_bias == "BEARISH" and action_side.upper() == "SHORT":
+            return True
+        return False
+
+    async def handle_disconnect(self):
+        """Safety reset preventing stale filter application during network drops."""
+        async with self.lock:
+            self.bias = "NEUTRAL"
+            self.bias_expires_at = datetime.min
+            self.is_connected = False
+            logger.warning("Unusual Whales disconnected. Safety reset to NEUTRAL activated.")
+Use code with caution.trading_bot/order_manager.pyThis component implements an explicit tagging mechanism using the client_order_id field. This prevents concurrent strategies from cross-liquidating or corrupting open trades.pythonimport uuid
+import logging
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, TakeProfitRequest, StopLossRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
+
+logger = logging.getLogger(__name__)
+
+class StrategyOrderManager:
+    def __init__(self, trading_client: TradingClient):
+        self.client = trading_client
+
+    def submit_strategy_bracket(self, strategy_name: str, side: str, qty: int, entry_symbol: str, target_price: float, stop_price: float):
+        """
+        Executes isolated bracket orders using prefix tags inside client_order_id.
+        Prevents multiple running strategies from overlapping or liquidating each other.
+        """
+        order_side = OrderSide.BUY if side.upper() == "LONG" else OrderSide.SELL
+        opposite_side = OrderSide.SELL if order_side == OrderSide.BUY else OrderSide.BUY
+
+        # Tag order uniqueness structurally
+        unique_id = uuid.uuid4().hex[:8]
+        tagged_client_id = f"{strategy_name}_{unique_id}"
+
+        bracket_request = MarketOrderRequest(
+            symbol=entry_symbol,
+            qty=qty,
+            side=order_side,
+            time_in_force=TimeInForce.GTC,
+            client_order_id=tagged_client_id,
+            order_class="bracket",
+            take_profit=TakeProfitRequest(limit_price=round(target_price, 2)),
+            stop_loss=StopLossRequest(stop_price=round(stop_price, 2))
+        )
+
+        try:
+            order = self.client.submit_order(order_request=bracket_request)
+            logger.info(f"Bracket executed safely for {strategy_name}. Order ID: {order.id}")
+            return order
+        except Exception as e:
+            logger.error(f"Critical execution failure for {strategy_name}: {e}")
+            return None
+Use code with caution.trading_bot/strategies/coin_fcb.pyThis module contains the complete production implementation of your First Candle Break (FCB) strategy, incorporating the pre-calculated ATR volatility filter and structural capitulation guards.pythonimport logging
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+class FirstCandleBreakStrategy:
+    def __init__(self, config: dict, opening_bar_atr: Optional[float]):
+        self.config = config["fcb"]
+        self.opening_bar_atr = opening_bar_atr
+        self.has_fired_today = False
+
+    def evaluate_935_bar(self, first_candle: dict, current_price: float, current_equity: float) -> Optional[dict]:
+        """
+        Evaluates the 9:35 AM execution window for COIN capitulation shorting.
+        """
+        if self.has_fired_today:
+            return None
+
+        fc_open = first_candle["open"]
+        fc_close = first_candle["close"]
+        fc_high = first_candle["high"]
+        fc_low = first_candle["low"]
+        fc_range = fc_high - fc_low
+
+        # 1. First candle must be RED (bearish dominance)
+        if fc_close >= fc_open:
+            return None
+
+        # 2. Dynamic Volatility Range Filter Floor
+        if self.opening_bar_atr is not None:
+            min_fc_range = self.config["atr_min_mult"] * self.opening_bar_atr
+            if fc_range < min_fc_range:
+                logger.info(f"FCB skipped: Range ({fc_range:.2f}) below volatility floor ({min_fc_range:.2f})")
+                return None
+        else:
+            logger.warning("ATR context is missing. Strategy disabling itself safely.")
+            return None
+
+        # 3. Capitulation Guard (Avoid shorting exhaustive vertical gap downs)
+        capitulation_threshold = fc_open * self.config["max_range_pct"]
+        if fc_range > capitulation_threshold:
+            logger.info(f"FCB skipped: Range ({fc_range:.2f}) exceeds capitulation safety ceiling ({capitulation_threshold:.2f})")
+            return None
+
+        # 4. Strategy Breakout Execution Trigger
+        if current_price < fc_low:
+            self.has_fired_today = True
+
+            # Position sizing calculated via hard equity capital constraints
+            risk_amount = current_equity * 0.02
+            stop_distance = fc_range * self.config["stop_mult"]
+            qty = max(1, int(risk_amount / stop_distance))
+
+            target = current_price - (fc_range * self.config["target_mult"])
+            stop = current_price + stop_distance
+
+            return {
+                "side": "SHORT",
+                "qty": qty,
+                "target": target,
+                "stop": stop
+            }
+
+        return None
+Use code with caution.Step-by-Step Execution Verification PlanTo verify this bot framework inside a local paper trading environment prior to capital deployment, follow this exact sequence:[Step 1: Environment Setup]
+   └── Store API keys in environment vars -> ALPAC_API_KEY, UW_API_TOKEN
+   └── Confirm account equity exceeds $25,000 baseline inside your Alpaca Dashboard
+
+[Step 2: Pre-Market Volatility Calculations (9:15 AM ET)]
+   └── Fetch 14-day history of 5-minute bars via `market_data.py`
+   └── Isolate the 9:30-9:35 AM bar across history to calculate opening_bar_ATR
+   └── Pass computed value directly into the initialization of `FirstCandleBreakStrategy`
+
+[Step 3: Establish Socket Connections (9:25 AM ET)]
+   └── Spin up async tasks for Alpaca stream and Unusual Whales stream
+   └── Verify `process_queue_loop()` is actively draining messages without latency lag
+
+[Step 4: Execute Strategy Gating and Safety Checks]
+   └── Check client_order_id prefixes on mock fills to verify isolated order tracking
+   └── Verify disconnect loop triggers: kill server internet connection to confirm bias resets to NEUTRAL

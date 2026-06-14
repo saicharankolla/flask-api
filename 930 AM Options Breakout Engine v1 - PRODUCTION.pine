@@ -4,7 +4,7 @@ indicator("930 AM Options Breakout Engine v1 - PRODUCTION", overlay=true)
 // ──────────────────────────────────────────────
 // INPUTS
 // ──────────────────────────────────────────────
-webhookSecret    = input.string("", title="Webhook Secret (must match WEBHOOK_SECRET env var on server)")
+webhookSecret    = input.string("", title="Webhook Secamret (must match WEBHOOK_SECRET env var on server)")
 atrPeriod        = input.int(14,    title="ATR Period")
 bufferMultiplier = input.float(0.1, title="False Breakout ATR Buffer (0.1 = 10% of ATR)", minval=0.0)
 trendEmaFast     = input.int(5,     title="Trend Fast EMA")
